@@ -26,6 +26,19 @@
   --mono: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
 }
 
+/* dark theme — same tokens, WCAG AA re-checked on dark surfaces */
+:root[data-theme="dark"] {
+  --bg-paper: #14181C;
+  --bg-panel: #1C2228;
+  --text-ink: #E6EAEC;      /* 13.2:1 on paper */
+  --accent-clinical: #4DBFA6; /* 7.1:1 on panel */
+  --accent-strong: #6FD3BE;
+  --muted-subtle: #9AA7B0;  /* 6.4:1 on paper */
+  --line-quiet: #2C343B;
+  --danger-clinical: #FF6B61;
+  --think-backdrop: #232B31;
+}
+
 * { box-sizing: border-box; }
 html, body { margin: 0; padding: 0; }
 body {
@@ -116,7 +129,12 @@ details.think.open-stream summary { animation: think-pulse 1.6s ease-in-out infi
 .chip-error { color: var(--danger-clinical); border-color: var(--danger-clinical); }
 
 /* ------------------------------------------------------------ composer ---- */
-.composer { display: flex; gap: var(--s3); align-items: flex-end; }
+.composer { display: flex; gap: var(--s3); align-items: stretch; }
+.composer-actions {
+  display: flex; flex-direction: column; gap: var(--s2);
+  justify-content: center;
+}
+.composer-actions .btn { padding: var(--s1) var(--s4); font-size: 14px; }
 #chat-input {
   flex: 1; resize: vertical; min-height: 56px;
   padding: var(--s3) var(--s4);
@@ -125,6 +143,16 @@ details.think.open-stream summary { animation: think-pulse 1.6s ease-in-out infi
   font: inherit;
 }
 .footnote { margin-top: var(--s3); font-size: 12.5px; }
+
+/* ------------------------------------------------------- model chips ---- */
+.model-chips { display: inline-flex; gap: var(--s1); }
+.model-chip {
+  font-size: 11.5px; padding: var(--s1) var(--s2);
+  border-radius: 999px; border: 1px solid var(--line-quiet);
+  color: var(--muted-subtle); white-space: nowrap;
+}
+.model-chip.ok { color: var(--accent-clinical); border-color: var(--accent-clinical); }
+.model-chip.bad { color: var(--danger-clinical); border-color: var(--danger-clinical); }
 
 /* ------------------------------------------------------------- buttons ---- */
 .btn {
@@ -169,11 +197,37 @@ details.think.open-stream summary { animation: think-pulse 1.6s ease-in-out infi
 }
 .checklist { margin: 0; padding-left: var(--s5); color: var(--muted-subtle); font-size: 14px; }
 
+/* ------------------------------------------------- markdown answers ---- */
+.answer.md { white-space: normal; }
+.answer.md p { white-space: pre-wrap; margin: 0 0 var(--s2) 0; }
+.answer.md p:last-child { margin-bottom: 0; }
+.answer.md ul, .answer.md ol { margin: 0 0 var(--s2) 0; padding-left: var(--s5); }
+.answer.md h3, .answer.md h4, .answer.md h5 { margin: var(--s3) 0 var(--s1) 0; }
+.answer.md code {
+  font-family: var(--mono); background: var(--think-backdrop);
+  padding: 0 var(--s1); border-radius: var(--r1); font-size: 14px;
+}
+.answer table { border-collapse: collapse; margin: var(--s2) 0; font-size: 14px; }
+.answer th, .answer td { border: 1px solid var(--line-quiet); padding: var(--s1) var(--s2); text-align: left; }
+.answer th { background: var(--think-backdrop); }
+
+/* ------------------------------------------------------- evidence UI ---- */
+.drawer input[type="text"] {
+  width: 100%; padding: var(--s2) var(--s3); font: inherit;
+  border: 1px solid var(--line-quiet); border-radius: var(--r1);
+  background: var(--bg-panel); color: var(--text-ink);
+  flex: 1;
+}
+.ev-results { display: flex; flex-direction: column; gap: var(--s3); max-height: 320px; overflow: auto; }
+.ev-item { border: 1px solid var(--line-quiet); border-radius: var(--r2); padding: var(--s2) var(--s3); }
+.ev-item a { color: var(--accent-clinical); text-decoration: none; font-weight: 600; }
+.ev-item a:hover { text-decoration: underline; }
+
 /* ------------------------------------------------- reduced motion & print ---- */
 @media (prefers-reduced-motion: reduce) {
   * { animation: none !important; transition: none !important; }
 }
 @media print {
-  .topbar, .composer, .footnote { display: none; }
+  .topbar, .composer, .footnote, .model-chips { display: none; }
   body { background: white; }
 }

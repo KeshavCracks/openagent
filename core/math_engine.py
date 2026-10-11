@@ -15,6 +15,13 @@ Covered formulas (v1):
   * Holliday-Segar 4-2-1 maintenance fluids (mL/hr)
   * Anion gap; glucose-corrected sodium
 
+Covered scales & additional formulas (v1.1):
+  * Mean arterial pressure (MAP, mmHg)
+  * Albumin-corrected calcium (mg/dL and mmol/L, auto-unit detection)
+  * CHA2DS2-VASc atrial-fibrillation stroke risk (Lip 2010)
+  * Wells score for DVT (Lancet 1997) and for PE (Ann Intern Med 2001)
+  * CURB-65 pneumonia severity (Lim, Thorax 2003)
+
 Every result carries: echoed inputs, formula name, citation, warnings,
 and interpretation. Unit conversion (lb→kg, in→cm) is explicit.
 """
@@ -271,6 +278,214 @@ def corrected_sodium(na: float, glucose_mg_dl: float) -> MathResult:
     )
 
 
+def mean_arterial_pressure(sbp: float, dbp: float) -> MathResult:
+    """MAP (mmHg) = DBP + (SBP − DBP) / 3."""
+    s = _num("SBP", sbp, 30, 300)
+    d = _num("DBP", dbp, 20, 250)
+    if d >= s:
+        raise MathError(f"DBP ({d:g}) must be lower than SBP ({s:g}) — check the BP entry.")
+    mp = d + (s - d) / 3.0
+    interp = (
+        "≥70 — generally adequate organ perfusion." if mp >= 70 else (
+            "65–69 — borderline; common resuscitation target floor (sepsis bundles: ≥65)." if mp >= 65
+            else "<65 — hypoperfusion risk; assess end-organ function and escalate per protocol."))
+    warnings = []
+    if s < 80:
+        warnings.append("SBP <80 mmHg — treat as shock until proven otherwise.")
+    return MathResult(
+        value=round(mp, 1), unit="mmHg", formula="Mean arterial pressure — MAP = DBP + ⅓(SBP − DBP)",
+        inputs={"SBP": f"{s:g}", "DBP": f"{d:g}"},
+        reference="Standard hemodynamic arithmetic (rationale: Edgar & Shrier, Front Physiol 2018).",
+        interpretation=interp, warnings=warnings,
+    )
+
+
+def corrected_calcium(ca: float, albumin: float, ca_unit: str, alb_unit: str) -> MathResult:
+    """Payne albumin correction, both unit systems. Same unit returned as input Ca."""
+    ca_u, alb_u = ca_unit.lower(), alb_unit.lower()
+    if ca_u == "mg/dl":
+        c = _num("calcium", ca, 3.0, 20.0)
+        a_g_dl = _num("albumin", albumin * (1.0 if alb_u == "g/dl" else 10.0), 0.5, 7.0)
+        corr = c + 0.8 * (4.0 - a_g_dl)
+        unit, bands = "mg/dL", (8.5, 10.5)
+        inputs = {"calcium": f"{c:g} mg/dL", "albumin": f"{a_g_dl:g} g/dL"}
+    elif ca_u == "mmol/l":
+        c = _num("calcium", ca, 0.5, 5.0)
+        a_g_l = _num("albumin", albumin * (1.0 if alb_u == "g/l" else 0.1), 5.0, 70.0)
+        corr = c + 0.02 * (40.0 - a_g_l)
+        unit, bands = "mmol/L", (2.12, 2.62)
+        inputs = {"calcium": f"{c:g} mmol/L", "albumin": f"{a_g_l:g} g/L"}
+    else:
+        raise MathError("calcium unit must be mg/dL or mmol/L.")
+    lo, hi = bands
+    if corr < lo:
+        interp = "Below range — corrected hypocalcemia; check ionized calcium, Mg, and symptoms." if (corr < lo - (hi - lo) * 0.12) else "Mildly low — consider ionized calcium to confirm."
+    elif corr > hi:
+        interp = "Above range — corrected hypercalcemia; check PTH, vitamin D, malignancy screen per protocol."
+    else:
+        interp = "Within normal range after albumin correction."
+    return MathResult(
+        value=round(corr, 2), unit=unit, formula="Albumin-corrected calcium (Payne)",
+        inputs=inputs,
+        reference="Payne et al., BMJ 1973;4:643 (0.8 mg/dL or 0.02 mmol/L per 1 g/dL albumin).",
+        interpretation=interp,
+        warnings=["Correction is invalid in critical illness or acidosis — prefer ionized calcium."],
+    )
+
+
+# ------------------------------------------------- checklist score scales --
+_NEG_GUARD = re.compile(r"\b(no|not|without|denies|negative for|free of)\b[^.;]{0,28}$", re.I)
+
+
+def _flag(text: str, keywords: List[str]) -> bool:
+    """True when any keyword appears with no negation cue in the preceding 28 chars."""
+    for kw in keywords:
+        for m in re.finditer(kw, text, re.I):
+            before = text[max(0, m.start() - 34):m.start()]
+            if _NEG_GUARD.search(before):
+                continue
+            return True
+    return False
+
+
+def _score_result(points: float, unit: str, formula: str, inputs: Dict[str, str],
+                  reference: str, interpretation: str, warnings: List[str]) -> MathResult:
+    return MathResult(
+        value=float(round(points, 1)), unit=unit, formula=formula, inputs=inputs,  # keep Wells .5 steps
+        reference=reference, interpretation=interpretation, warnings=warnings,
+    )
+
+
+def cha2ds2_vasc(age_y: float, sex: str, text: str) -> MathResult:
+    """CHA2DS2-VASc from age, sex, and free-text comorbidity flags. Lip, Chest 2010."""
+    a = _num("age", age_y, 18, 120)
+    sx = _sex(sex)
+    chf = _flag(text, [r"\bchf\b", r"heart failure", r"cardiac failure", r"\blv dysfunction\b"])
+    htn = _flag(text, [r"hypertensi", r"\bhtn\b", r"high blood pressure"])
+    dm = _flag(text, [r"diabet\w*", r"\bdm2?\b"])
+    stroke = _flag(text, [r"\bstroke\b", r"\btia\b", r"\bcva\b", r"thromboembolism"])
+    vascular = _flag(text, [r"vascular disease", r"\bpad\b", r"peripheral (?:artery|vascular)",
+                            r"myocardial infarction", r"\bprior mi\b", r"\baortic plaque\b",
+                            r"coronary (?:disease|artery)"])
+    pts = (1 if chf else 0) + (1 if htn else 0) + (2 if a >= 75 else 1 if a >= 65 else 0) \
+        + (1 if dm else 0) + (2 if stroke else 0) + (1 if vascular else 0) + (1 if sx == "female" else 0)
+    documented = ", ".join(k for k, v in
+                           (("CHF", chf), ("HTN", htn), ("DM", dm), ("stroke/TIA", stroke), ("vascular", vascular)) if v) or "none documented"
+    if sx == "male":
+        interp = ("Low risk (~0.2%/yr) — no anticoagulation indicated." if pts == 0 else
+                  "Moderate (~0.6%/yr) — consider anticoagulation after shared decision-making." if pts == 1 else
+                  "High (≥2.2%/yr) — anticoagulation recommended unless contraindicated.")
+    else:
+        interp = ("Low risk — female sex alone does not confer stroke risk." if pts <= 1 else
+                  "Moderate (~0.6–0.9%/yr) — consider anticoagulation." if pts == 2 else
+                  "High (≥2.2%/yr) — anticoagulation recommended unless contraindicated.")
+    return _score_result(
+        pts, "points", "CHA2DS2-VASc stroke risk in atrial fibrillation",
+        {"age": f"{a:g} y", "sex": sx, "comorbidities": documented},
+        "Lip et al., Chest 2010;137:263. Friberg, Eur Heart J 2012;33:2716.",
+        interp,
+        ["Screening tool — apply only in confirmed atrial fibrillation; bleeding risk assessed separately (HAS-BLED)."],
+    )
+
+
+def wells_dvt(text: str) -> MathResult:
+    """Wells score for lower-limb DVT. Wells et al., Lancet 1997;350:1795."""
+    criteria = [
+        (1, "active cancer", _flag(text, [r"active cancer", r"cancer treatment", r"malignancy", r"neoplasm", r"chemotherapy"])),
+        (1, "paralysis/recent cast", _flag(text, [r"paralys\w*", r"paresis", r"plaster", r"\bcast\b", r"immobiliz\w+ of the leg"])),
+        (1, "bedridden ≥3 d / major surgery <12 wk", _flag(text, [r"bedridden", r"bed[- ]bound", r"major surgery", r"post[- ]?op\w*"])),
+        (1, "deep-vein tenderness", _flag(text, [r"tenderness", r"calf pain", r"deep vein.*pain"])),
+        (1, "entire leg swollen", _flag(text, [r"entire leg", r"whole leg"])),
+        (1, "calf swelling >3 cm", _flag(text, [r"calf swelling", r"calf is swollen", r"swollen calf"])),
+        (1, "pitting edema", _flag(text, [r"pitting"])),
+        (1, "collateral superficial veins", _flag(text, [r"collateral", r"non[- ]?varicose"])),
+        (1, "prior DVT", _flag(text, [r"(?:prior|previous|history of)\s+(?:dvt|deep vein)", r"documented dvt"])),
+        (-2, "alternative diagnosis ≥ as likely", _flag(text, [r"alternative diagnosis", r"another diagnosis.*as likely", r"muscle strain", r"cellulitis only"])),
+    ]
+    hits = [(p, n) for p, n, hit in criteria if hit]
+    if not hits:
+        raise MathError("Wells DVT needs at least one documented criterion — the LLM is forbidden from inventing exam findings. List the positive/negative items from the chart.")
+    pts = sum(p for p, _ in hits)
+    documented = "; ".join(f"{n} ({p:+d})" for p, n in hits)
+    interp = ("0 — low probability (~5%): DVT unlikely; consider D-dimer to rule out." if pts == 0 else
+              "1–2 — moderate probability (~17%): ultrasound ± D-dimer per pathway." if pts <= 2 else
+              "≥3 — high probability (~53%): proceed to proximal compression ultrasound.")
+    return _score_result(
+        pts, "points", "Wells score — DVT probability",
+        {"criteria": documented},
+        "Wells et al., Lancet 1997;350:1795. NEJM 2003;349:1223.",
+        interp,
+        ["Pretest-probability tool — do not treat on the score alone; pair with D-dimer/ultrasound."],
+    )
+
+
+def wells_pe(text: str) -> MathResult:
+    """Wells score for pulmonary embolism. Wells et al., Ann Intern Med 2001;135:987."""
+    hr_m = re.search(r"(\d{2,3})\s*(?:bpm|beats|/min)", text, re.I)
+    hr = float(hr_m.group(1)) if hr_m else None
+    criteria: List[Tuple[float, str, bool]] = [
+        (3.0, "clinical signs of DVT", _flag(text, [r"signs? of dvt", r"dvt symptoms", r"calf swelling", r"leg swelling", r"unilateral leg"])),
+        (3.0, "PE most likely diagnosis", _flag(text, [r"pe (?:is )?(?:#1|number one|most likely|top)", r"alternative.*less likely", r"no alternative diagnosis"])),
+        (1.5, "HR >100", bool(hr and hr > 100)),
+        (1.5, "immobilization ≥3 d / surgery <4 wk", _flag(text, [r"immobiliz\w*", r"surgery", r"post[- ]?op\w*", r"bedridden"])),
+        (1.5, "prior DVT/PE", _flag(text, [r"(?:prior|previous|history of)\s+(?:dvt|pe|pulmonary embol)"])),
+        (1.0, "hemoptysis", _flag(text, [r"hemoptysis", r"haemoptysis", r"coughing (?:up )?blood"])),
+        (1.0, "malignancy", _flag(text, [r"cancer", r"malignancy", r"neoplasm"])),
+    ]
+    hits = [(p, n) for p, n, hit in criteria if hit]
+    if not hits:
+        raise MathError("Wells PE needs at least one documented criterion (e.g., heart rate, hemoptysis, DVT signs) — the LLM is forbidden from inventing findings.")
+    pts = sum(p for p, _ in hits)
+    documented = "; ".join(f"{n} ({p:g})" for p, n in hits)
+    interp = ("0–1 — low probability (~1.3%): consider PERC before D-dimer." if pts <= 1 else
+              "2–6 — moderate probability (~16%): D-dimer (if low/moderate) or CTPA per pathway." if pts <= 6 else
+              "≥7 — high probability (~38%): proceed directly to CTPA.")
+    warnings = ["Pretest-probability tool — do not treat on the score alone."]
+    if not hr_m:
+        warnings.append("Heart rate not documented — score may underestimate.")
+    return _score_result(
+        pts, "points", "Wells score — PE probability (2-tier)",
+        {"criteria": documented, "HR": f"{hr:g} bpm" if hr else "not documented"},
+        "Wells et al., Ann Intern Med 2001;135:987.",
+        interp, warnings,
+    )
+
+
+def curb65(age_y: float, text: str) -> MathResult:
+    """CURB-65 pneumonia severity. Lim et al., Thorax 2003;58:377."""
+    a = _num("age", age_y, 16, 120)
+    confusion = _flag(text, [r"confus\w*"])
+    urea_m = re.search(r"\b(?:urea|bun)\s*(?:of|=|:|is)?\s*(\d+(?:\.\d+)?)", text, re.I)
+    urea_hit = False
+    if urea_m:
+        urea_val = float(urea_m.group(1))
+        urea_hit = urea_val > 19.0 if urea_m.group(0).lower().startswith("bun") else urea_val > 7.0
+    rr_m = re.search(r"(?:rr|respiratory rate|resp rate)\s*(?:of|=|:|is)?\s*(\d{2})", text, re.I)
+    rr_hit = bool(rr_m and float(rr_m.group(1)) >= 30)
+    bp_m = re.search(r"(\d{2,3})\s*(?:/|over)\s*(\d{2,3})", text)
+    bp_hit = bool(bp_m and (float(bp_m.group(1)) < 90 or float(bp_m.group(2)) <= 60))
+    age_hit = a >= 65
+    pts = sum((confusion, urea_hit, rr_hit, bp_hit, age_hit))
+    documented = "; ".join(n for n, hit in
+                           (("confusion", confusion), ("urea/BUN", urea_hit), ("RR≥30", rr_hit),
+                            ("BP<90/≤60", bp_hit), ("age≥65", age_hit)) if hit) or "none"
+    missing = [n for n, hit in
+               (("confusion", confusion), ("urea/BUN", urea_hit), ("respiratory rate", rr_m is not None),
+                ("blood pressure", bp_m is not None)) if not hit]
+    warnings = []
+    if missing:
+        warnings.append("Not documented — score may underestimate: " + ", ".join(missing) + ".")
+    interp = ("0–1 — suitable for outpatient management (if socially stable)." if pts <= 1 else
+              "2 — consider short inpatient stay or supervised outpatient care." if pts == 2 else
+              "≥3 — severe pneumonia; hospitalize, assess ICU need (score ≥4 → consider ICU).")
+    return _score_result(
+        pts, "points", "CURB-65 pneumonia severity",
+        {"age": f"{a:g} y", "criteria hit": documented},
+        "Lim et al., Thorax 2003;58:377 (BSI/CRB-65 derivation).",
+        interp, warnings,
+    )
+
+
 # ----------------------------------------------------- intent interception --
 _RE_AGE = re.compile(r"(\d{1,3}(?:\.\d)?)\s*(?:-?\s*(?:years?|yrs?|yo|y/o|y\.o)|y\b)", re.I)
 _RE_WT = re.compile(r"(\d{1,3}(?:\.\d+)?)\s*(kg|kilos?|kilograms?|lbs?|pounds?)\b", re.I)
@@ -305,7 +520,31 @@ INTENT_PATTERNS: List[Tuple[str, re.Pattern, str]] = [
     ("maintenance_fluids", re.compile(r"maintenance fluids|4[- ]2[- ]1|holliday", re.I), "421"),
     ("anion_gap", re.compile(r"anion gap", re.I), "ag"),
     ("corrected_na", re.compile(r"corrected sodium|correct the sodium|sodium correction", re.I), "na_corr"),
+    ("map", re.compile(
+        r"mean arterial"
+        r"|\bmap\b\s*(?:is|of|from|:|=)?\s*\d"
+        r"|\bmap\b[^.\n]{0,40}\d{2,3}\s*(?:/|over)\s*\d{2,3}"
+        r"|\d{2,3}\s*(?:/|over)\s*\d{2,3}[^.\n]{0,40}\bmap\b", re.I), "map"),
+    ("corrected_ca", re.compile(
+        r"corrected calcium|calcium correction|correct the calcium|albumin[- ]corrected", re.I), "ca_corr"),
+    ("chads", re.compile(r"cha2ds2|cha2-ds2|chads2?\b|chads[- ]vasc|vasc score", re.I), "chads"),
+    ("wells", re.compile(r"\bwells\b", re.I), "wells"),
+    ("curb65", re.compile(r"curb[- ]?65", re.I), "curb65"),
 ]
+
+
+def _infer_unit(value: float, range_a: Tuple[float, float], range_b: Tuple[float, float],
+               unit_a: str, unit_b: str) -> str:
+    """Pick the only unit whose plausible range fits; ambiguous values must ask."""
+    in_a = range_a[0] <= value <= range_a[1]
+    in_b = range_b[0] <= value <= range_b[1]
+    if in_a and not in_b:
+        return unit_a
+    if in_b and not in_a:
+        return unit_b
+    raise MathError(
+        f"Value {value:g} fits more than one unit system — state the units "
+        f"(e.g., '{unit_a}' or '{unit_b}') explicitly.")
 
 
 def detect_intent(text: str) -> Optional[str]:
@@ -332,6 +571,11 @@ def try_compute(text: str) -> Optional[MathResult]:
         "peds": "weight and mg/kg (plus optional max mg)", "drip": "volume, time, drop factor",
         "infusion": "dose mcg/kg/min, weight, concentration", "421": "weight",
         "ag": "Na, Cl, HCO3", "na_corr": "Na, glucose",
+        "map": "SBP and DBP (e.g., BP 88/54)",
+        "ca_corr": "calcium and albumin values — units auto-detected when unambiguous (e.g., 'calcium 7.6 mg/dL, albumin 2.8 g/dL')",
+        "chads": "age and sex, plus comorbidity words (CHF, hypertension, diabetes, stroke/TIA, vascular disease)",
+        "wells": "the documented criteria (e.g., 'calf swelling, active cancer, HR 110 bpm') — findings are never invented",
+        "curb65": "age, plus confusion, urea/BUN, respiratory rate, blood pressure if available",
     }[action])
     try:
         if action == "cg":
@@ -385,6 +629,35 @@ def try_compute(text: str) -> Optional[MathResult]:
             if len(nums) < 2:
                 raise need_err
             return corrected_sodium(float(nums[0]), float(nums[1]))
+        if action == "map":
+            m = re.search(r"(\d{2,3})\s*(?:/|over)\s*(\d{2,3})", text, re.I)
+            if not m:
+                raise need_err
+            return mean_arterial_pressure(float(m.group(1)), float(m.group(2)))
+        if action == "ca_corr":
+            m_ca = re.search(r"(?:calcium|\bca\b)\s*(?:of|=|:|is)?\s*(\d{1,2}(?:\.\d+)?)\s*(mg\s*/\s*dl|mmol\s*/\s*l)?", text, re.I)
+            m_al = re.search(r"(?:albumin|\balb\b)\s*(?:of|=|:|is)?\s*(\d{1,2}(?:\.\d+)?)\s*(g\s*/\s*dl|g\s*/\s*l)?", text, re.I)
+            if not (m_ca and m_al):
+                raise need_err
+            ca_v = float(m_ca.group(1))
+            al_v = float(m_al.group(1))
+            ca_u = re.sub(r"\s+", "", m_ca.group(2)).lower() if m_ca.group(2) else None
+            al_u = re.sub(r"\s+", "", m_al.group(2)).lower() if m_al.group(2) else None
+            ca_u = ca_u or _infer_unit(ca_v, (3.0, 20.0), (0.5, 3.8), "mg/dl", "mmol/l")
+            al_u = al_u or _infer_unit(al_v, (0.5, 7.0), (10.0, 70.0), "g/dl", "g/l")
+            return corrected_calcium(ca_v, al_v, ca_u, al_u)
+        if action == "chads":
+            if not all(k in slots for k in ("age", "sex")):
+                raise need_err
+            return cha2ds2_vasc(float(slots["age"]), slots["sex"], text)
+        if action == "wells":
+            if re.search(r"\bpe\b|pulmonary|embolism", text, re.I):
+                return wells_pe(text)
+            return wells_dvt(text)
+        if action == "curb65":
+            if "age" not in slots:
+                raise need_err
+            return curb65(float(slots["age"]), text)
     except MathError:
         raise
     raise need_err

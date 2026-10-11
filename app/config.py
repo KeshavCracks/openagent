@@ -20,7 +20,7 @@ from pathlib import Path
 from typing import Any, Dict, Optional
 
 APP_TITLE = "MedHarness — Clinical AI Workstation"
-VERSION = "1.0.0"
+VERSION = "1.1.0"
 
 # ---------------------------------------------------------------------------
 # Cloudflare interstitial bypass (free trycloudflare.com tunnels sometimes

@@ -47,6 +47,38 @@ Paste it in **Settings → Groq API key** only if you want the in-app *Deploy* g
 (Groq acts as a headless DevOps assistant that drafts deployment cells — it never
 sees clinical traffic).
 
+## First chat in 5 minutes (once connected)
+
+Three prompts that show what the harness guarantees:
+
+1. **The AI never does arithmetic.** Ask: *"CrCl for 72yo male, 68 kg, SCr 1.4"* — a green
+   chip appears with the result computed by the local engine, and the model is blocked
+   from re-computing it.
+2. **Built-in clinical scores (new in v1.1).** Ask:
+   *"CHADS-VASc for 72yo male with hypertension, diabetes and prior stroke"*,
+   *"Wells DVT: active cancer, calf swelling, tenderness, alternative diagnosis less likely"*,
+   *"CURB-65: 72yo confused, RR 32, BP 85/50, urea 9"* — all scored deterministically
+   (MAP, albumin-corrected calcium, Wells PE and more are also covered).
+3. **Workflow gates.** Type `/constraints` to see the anti-hallucination rules the
+   harness enforces before an answer is accepted.
+
+Composer buttons: **Evidence** (opt-in PubMed lookup — enable "Public grounding" in
+Settings), **Export PDF** (printable consult summary — choose "Save as PDF" in the
+browser dialog), **Dark** (night mode for on-call).
+
+## FAQ
+
+| Question | Answer |
+|---|---|
+| Do I need the Groq API key? | No. The notebook path never touches Groq. It only powers the optional in-app deploy generator. |
+| Where does patient data go? | Chat text goes over an encrypted, token-protected tunnel to the Colab VM you started — nowhere else. Groq never sees clinical traffic. Public grounding is opt-in and sends only the query words. |
+| How long does the free T4 last? | Google idles free VMs after ~90 unused minutes (session caps apply). MedHarness pings every 3 min to keep it awake. If it sleeps, re-run the two notebook cells and reconnect. |
+| Why is the first bootstrap slow? | It downloads ~8.3 GB of quantized weights once per VM session. Wait for the `CLOUD BRAIN — ONLINE` banner. |
+| Does it work offline? | The UI, math engine, and quality gates are fully local. Chat inference needs the Colab brain. |
+| Where are my tokens stored? | `~/.local/state/medical-harness/` with 0600 permissions. Never in the repo, never uploaded. |
+| Windows SmartScreen blocked `run.bat`? | Click "More info → Run anyway" — it is a plain-text script you can open in Notepad first. |
+| Port 8787 already in use? | Another MedHarness window is running. Close it and relaunch. |
+
 ## Troubleshooting
 
 | Symptom | Fix |

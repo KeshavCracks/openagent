@@ -20,7 +20,9 @@
         <option value="medgemma">MedGemma-4B · imaging/multimodal</option>
       </select>
     </label>
+    <span id="model-chips" class="model-chips" title="Which engines the cloud brain is serving"></span>
     <span id="cloud-status" class="status-chip" role="status">cloud: offline</span>
+    <button id="btn-theme" class="btn btn-ghost" aria-label="Toggle dark mode">Dark</button>
     <button id="btn-settings" class="btn btn-ghost">Settings</button>
   </div>
 </header>
@@ -32,7 +34,11 @@
       <textarea id="chat-input" rows="3"
         placeholder="Paste history, labs, imaging summary… (math is intercepted &amp; computed locally; slash commands: /spec /plan /build /test /review /constraints)"
         aria-label="Message"></textarea>
-      <button type="submit" class="btn btn-primary" id="btn-send">Send</button>
+      <div class="composer-actions">
+        <button type="submit" class="btn btn-primary" id="btn-send">Send</button>
+        <button type="button" class="btn btn-ghost" id="btn-evidence" title="Look the topic up on PubMed (public, read-only, opt-in)">Evidence</button>
+        <button type="button" class="btn btn-ghost" id="btn-export" title="Printable summary — use the browser's 'Save as PDF'">Export PDF</button>
+      </div>
     </form>
     <p class="footnote muted">
       Decision support only — not a medical device. Every arithmetic result is computed by the
@@ -84,6 +90,24 @@
   </form>
 </dialog>
 
+<!-- Evidence lookup dialog (opt-in public grounding) -->
+<dialog id="evidence" class="drawer" aria-labelledby="ev-title">
+  <div class="drawer-inner">
+    <h2 id="ev-title">Evidence lookup — PubMed</h2>
+    <p class="muted">Public, read-only literature search. Only the query terms are sent — never session
+      data or chat history. Enable <strong>Public grounding</strong> in Settings → Modules first.</p>
+    <div class="row">
+      <input id="ev-query" type="text" placeholder="e.g., sepsis bundle mortality RCT">
+      <button type="button" id="btn-ev-search" class="btn btn-primary">Search</button>
+    </div>
+    <div id="ev-results" class="ev-results" aria-live="polite"></div>
+    <div class="row row-end">
+      <button type="button" id="btn-ev-insert" class="btn btn-ghost" hidden>Insert citations</button>
+      <button type="button" class="btn" onclick="evidence.close()">Close</button>
+    </div>
+  </div>
+</dialog>
+
 <script>
 /* ------------------------------------------------------------------ */
 /* Minimal offline UI. 4px-grid styling in styles.css (WCAG AA).      */
@@ -91,6 +115,69 @@
 /* ------------------------------------------------------------------ */
 const $ = (id) => document.getElementById(id);
 const chatLog = $("chat-log");
+
+/* theme ----------------------------------------------------------- */
+function applyTheme(t) {
+  document.documentElement.dataset.theme = t;
+  $("btn-theme").textContent = t === "dark" ? "Light" : "Dark";
+  try { localStorage.setItem("mh-theme", t); } catch {}
+}
+applyTheme(localStorage.getItem("mh-theme")
+  || (matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light"));
+$("btn-theme").addEventListener("click", () =>
+  applyTheme(document.documentElement.dataset.theme === "dark" ? "light" : "dark"));
+
+/* safe markdown (escape first, then structure) --------------------- */
+function esc(s) {
+  return String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+}
+function inlineMD(s) {
+  return s
+    .replace(/`([^`]+)`/g, "<code>$1</code>")
+    .replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>")
+    .replace(/(^|\s)\*([^*\n]+)\*/g, "$1<em>$2</em>");
+}
+function mdHtml(src) {
+  const lines = esc(src).split(/\r?\n/);
+  const out = [];
+  let i = 0;
+  while (i < lines.length) {
+    const ln = lines[i];
+    if (/^\s*\|.*\|\s*$/.test(ln) && i + 1 < lines.length && /^\s*\|[\s:|-]+\|\s*$/.test(lines[i + 1])) {
+      const head = ln.split("|").slice(1, -1).map((c) => c.trim());
+      i += 2;
+      const rows = [];
+      while (i < lines.length && /^\s*\|.*\|\s*$/.test(lines[i])) {
+        rows.push(lines[i].split("|").slice(1, -1).map((c) => c.trim()));
+        i++;
+      }
+      out.push("<table><thead><tr>" + head.map((h) => "<th>" + inlineMD(h) + "</th>").join("")
+        + "</tr></thead><tbody>"
+        + rows.map((r) => "<tr>" + r.map((c) => "<td>" + inlineMD(c) + "</td>").join("") + "</tr>").join("")
+        + "</tbody></table>");
+      continue;
+    }
+    const h = ln.match(/^(#{1,4})\s+(.*)$/);
+    if (h) { out.push(`<h${h[1].length + 2}>` + inlineMD(h[2]) + `</h${h[1].length + 2}>`); i++; continue; }
+    if (/^\s*[-*]\s+/.test(ln)) {
+      const items = [];
+      while (i < lines.length && /^\s*[-*]\s+/.test(lines[i])) {
+        items.push("<li>" + inlineMD(lines[i].replace(/^\s*[-*]\s+/, "")) + "</li>"); i++;
+      }
+      out.push("<ul>" + items.join("") + "</ul>"); continue;
+    }
+    if (/^\s*\d+[.)]\s+/.test(ln)) {
+      const items = [];
+      while (i < lines.length && /^\s*\d+[.)]\s+/.test(lines[i])) {
+        items.push("<li>" + inlineMD(lines[i].replace(/^\s*\d+[.)]\s+/, "")) + "</li>"); i++;
+      }
+      out.push("<ol>" + items.join("") + "</ol>"); continue;
+    }
+    if (!ln.trim()) { i++; continue; }
+    out.push("<p>" + inlineMD(ln) + "</p>"); i++;
+  }
+  return out.join("");
+}
 
 function el(tag, cls, text) {
   const n = document.createElement(tag);
@@ -187,6 +274,10 @@ async function send() {
         addChip(shell.chips, "error", payload.message);
       } else if (event === "done") {
         shell.think.open = false;
+        if (answer.trim()) {
+          shell.answer.classList.add("md");
+          shell.answer.innerHTML = mdHtml(answer);
+        }
       }
       chatLog.scrollTop = chatLog.scrollHeight;
     }
@@ -203,6 +294,19 @@ async function refreshStatus() {
     if (s.groq_configured) $("groq-key").placeholder = "key saved (hidden)";
     $("reach-toggle").checked = !!s.agent_reach_enabled;
   } catch { /* UI-only */ }
+  refreshModels();
+}
+
+async function refreshModels() {
+  try {
+    const m = await (await fetch("/api/models")).json();
+    const box = $("model-chips");
+    box.innerHTML = "";
+    if (!m.tunnel_configured) { box.appendChild(el("span", "model-chip", "models: —")); return; }
+    (m.models || []).forEach((mm) =>
+      box.appendChild(el("span", "model-chip " + (mm.served ? "ok" : "bad"),
+        (mm.served ? "✓ " : "✗ ") + mm.alias)));
+  } catch { /* advisory panel */ }
 }
 
 async function deploy() {
@@ -245,10 +349,102 @@ async function connect() {
   await refreshStatus();
 }
 
+/* evidence lookup (opt-in public grounding) ----------------------- */
+let evResults = [];
+async function evSearch() {
+  const q = $("ev-query").value.trim();
+  if (!q) return;
+  const box = $("ev-results");
+  box.textContent = "Searching PubMed…";
+  try {
+    const res = await fetch("/api/evidence", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ query: q }),
+    });
+    if (!res.ok) { box.textContent = (await res.json()).detail || "Lookup failed."; return; }
+    const data = await res.json();
+    evResults = data.results || [];
+    box.innerHTML = "";
+    if (!evResults.length) {
+      box.textContent = data.warning ? "Lookup failed: " + data.warning : "No results for that query.";
+      return;
+    }
+    evResults.forEach((r) => {
+      const item = el("div", "ev-item");
+      const a = el("a", "ev-title-link", r.title || "(untitled)");
+      a.href = r.url; a.target = "_blank"; a.rel = "noopener";
+      item.appendChild(a);
+      item.appendChild(el("div", "muted", `${r.journal || "—"} · ${r.year || ""} · PMID ${r.pmid}`));
+      box.appendChild(item);
+    });
+    $("btn-ev-insert").hidden = false;
+  } catch (e) { box.textContent = "Lookup failed: " + e.message; }
+}
+function evInsert() {
+  if (!evResults.length) return;
+  const cites = evResults.map((r, i) => `${i + 1}. ${r.title} — ${r.journal} ${r.year} (PMID ${r.pmid})`).join("\n");
+  const input = $("chat-input");
+  input.value = (input.value ? input.value + "\n\n" : "") + "Evidence:\n" + cites + "\n";
+  evidence.close();
+  input.focus();
+}
+
+/* printable consult summary (browser Save-as-PDF) ------------------ */
+function exportPDF() {
+  const bubbles = [...document.querySelectorAll("#chat-log .bubble")];
+  if (!bubbles.length) { alert("Nothing to export yet — start a consultation first."); return; }
+  let body = "";
+  bubbles.forEach((b) => {
+    if (b.classList.contains("user")) {
+      const t = b.querySelector(".bubble-text");
+      body += `<section class="turn"><h3>Clinician</h3><p>${esc(t ? t.textContent : "")}</p></section>`;
+    } else {
+      const ans = b.querySelector(".answer");
+      const chips = [...b.querySelectorAll(".chip")].map((c) => c.textContent);
+      const think = b.querySelector(".think-body");
+      body += `<section class="turn"><h3>MedHarness</h3>${ans ? mdHtml(ans.textContent) : ""}`;
+      if (chips.length) body += `<p class="chips-line">${esc(chips.join(" · "))}</p>`;
+      if (think && think.textContent.trim())
+        body += `<p class="reasoning"><strong>Reasoning (excerpt):</strong> ${esc(think.textContent.slice(0, 1200))}</p>`;
+      body += "</section>";
+    }
+  });
+  const html = `<!DOCTYPE html><html><head><meta charset="utf-8"><title>MedHarness — consultation summary</title><style>
+    body{font:12px/1.55 Georgia,'Times New Roman',serif;color:#111;margin:28px;}
+    h1{font-size:18px;margin:0 0 4px;} .meta{color:#555;font-size:11px;margin-bottom:18px;}
+    .turn{border-top:1px solid #ddd;padding:10px 0;} .turn h3{font-size:11px;text-transform:uppercase;
+    letter-spacing:.08em;color:#0A5C4D;margin:0 0 6px;}
+    table{border-collapse:collapse;margin:8px 0;} th,td{border:1px solid #bbb;padding:3px 8px;font-size:10.5px;}
+    th{background:#EFF4F2;text-align:left;} p{margin:0 0 6px;}
+    .chips-line{color:#0E7C66;font-size:10px;margin:6px 0 0;} .reasoning{color:#555;font-size:10px;}
+    .foot{margin-top:22px;border-top:1px solid #ddd;padding-top:8px;color:#777;font-size:9.5px;}
+    @page{margin:18mm;}</style></head><body>
+    <h1>MedHarness — Consultation summary</h1>
+    <div class="meta">Generated ${esc(new Date().toLocaleString())} · decision support only — not a medical device. Verify against institutional protocols.</div>
+    ${body}
+    <div class="foot">All arithmetic (doses, clearances, scores) was computed by MedHarness' deterministic local engine — never by the language model.</div>
+    </body></html>`;
+  const f = document.createElement("iframe");
+  f.setAttribute("aria-hidden", "true");
+  f.style.cssText = "position:fixed;right:0;bottom:0;width:0;height:0;border:0;";
+  document.body.appendChild(f);
+  f.srcdoc = html;
+  f.onload = () => {
+    try { f.contentWindow.focus(); f.contentWindow.print(); }
+    catch (e) { alert("Print failed: " + e.message); }
+    setTimeout(() => f.remove(), 8000);
+  };
+}
+
 $("chat-form").addEventListener("submit", (e) => { e.preventDefault(); send(); });
 $("btn-settings").addEventListener("click", () => { settings.showModal(); refreshStatus(); });
 $("btn-deploy").addEventListener("click", deploy);
 $("btn-connect").addEventListener("click", connect);
+$("btn-evidence").addEventListener("click", () => { evidence.showModal(); });
+$("btn-ev-search").addEventListener("click", evSearch);
+$("ev-query").addEventListener("keydown", (e) => { if (e.key === "Enter") { e.preventDefault(); evSearch(); } });
+$("btn-ev-insert").addEventListener("click", evInsert);
+$("btn-export").addEventListener("click", exportPDF);
 $("btn-copy-cell").addEventListener("click", async () => {
   await navigator.clipboard.writeText($("deploy-cell").textContent);
   $("btn-copy-cell").textContent = "Copied ✓";

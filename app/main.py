@@ -13,6 +13,7 @@ import asyncio
 import json
 import sys
 import threading
+import time
 import webbrowser
 from pathlib import Path
 from typing import Any, AsyncIterator, Dict, List, Optional
@@ -41,6 +42,7 @@ from core.tunnel_client import (  # noqa: E402
     TunnelClient,
     TunnelError,
 )
+from plugins.agent_reach.reach import pubmed_search  # noqa: E402
 from plugins.context_optimizer.optimizer import pack  # noqa: E402
 from plugins.quality_gates.engine import (  # noqa: E402
     GateBlock,
@@ -81,6 +83,10 @@ class TunnelRequest(BaseModel):
 
 class DeployRequest(BaseModel):
     groq_api_key: Optional[str] = None
+
+
+class EvidenceRequest(BaseModel):
+    query: str = Field(min_length=2, max_length=400)
 
 
 app = FastAPI(title=APP_TITLE, version=VERSION, docs_url=None, redoc_url=None)
@@ -208,6 +214,70 @@ async def api_tunnel(req: TunnelRequest) -> Dict[str, Any]:
     hb.start()
     _state["heartbeat"] = hb
     return result
+
+
+# ------------------------------------------------------- models & evidence ---
+_MODELS_TTL_S = 60.0
+_REPO_HINTS = {
+    "medr1": ("med-r1", "medr1"),
+    "medgemma": ("medgemma",),
+}
+
+
+@app.get("/api/models")
+async def api_models() -> Dict[str, Any]:
+    """Model health panel: which registered engines are actually served remotely.
+
+    Cached for 60 s so the UI chip can poll without hammering the tunnel.
+    Never raises — degraded panels must not break the chat surface.
+    """
+    cfg = get_settings()
+    tunnel: Optional[TunnelClient] = _state.get("tunnel")
+    if not cfg.remote_base_url or tunnel is None:
+        return {"tunnel_configured": False, "models": [], "warning": None}
+    cached = _state.get("models_cache")
+    if cached and (time.monotonic() - cached[0]) < _MODELS_TTL_S:
+        return cached[1]
+    models: List[Dict[str, Any]] = []
+    warning: Optional[str] = None
+    try:
+        raw = await tunnel.list_models()
+        remote_ids = [str(m.get("id", "")) for m in raw.get("data", [])]
+        for alias, spec in MODEL_REGISTRY.items():
+            served = next((rid for rid in remote_ids if any(h in rid.lower() for h in _REPO_HINTS[alias])), None)
+            models.append({
+                "alias": alias,
+                "description": spec.description,
+                "kind": spec.kind,
+                "served": served is not None,
+                "remote_id": served or "",
+            })
+    except Exception as exc:  # noqa: BLE001 — panel is advisory, chat stays primary
+        warning = f"{type(exc).__name__}: {exc}"
+    payload = {"tunnel_configured": True, "models": models, "warning": warning}
+    _state["models_cache"] = (time.monotonic(), payload)
+    return payload
+
+
+@app.post("/api/evidence")
+async def api_evidence(req: EvidenceRequest) -> Dict[str, Any]:
+    """Opt-in public grounding: PubMed E-utilities lookup of the query terms.
+
+    Only the query string leaves the machine — never session data or chat
+    history (enforced by the shape of agent_reach and its host allowlist).
+    """
+    cfg = get_settings()
+    if not cfg.agent_reach_enabled:
+        raise HTTPException(403, "Public grounding is off — enable it in Settings → Modules.")
+    out = await asyncio.to_thread(pubmed_search, req.query.strip(), 5)
+    results = [
+        {"pmid": r.get("pmid", ""), "title": r.get("title", ""),
+         "journal": r.get("journal", ""), "year": r.get("year", ""),
+         "url": f"https://pubmed.ncbi.nlm.nih.gov/{r.get('pmid', '')}/"}
+        for r in out.get("results", [])
+    ]
+    return {"query": req.query.strip(), "source": "PubMed (NLM E-utilities, read-only)",
+            "results": results, "warning": out.get("warning")}
 
 
 # ------------------------------------------------------------------ chat ---
