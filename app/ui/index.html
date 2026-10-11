@@ -1,0 +1,266 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>MedHarness — Clinical AI Workstation</title>
+<link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+<header class="topbar">
+  <div class="brand">
+    <span class="brand-mark" aria-hidden="true"></span>
+    <h1>MedHarness</h1>
+    <span class="muted">clinical decision support · local harness</span>
+  </div>
+  <div class="top-actions">
+    <label class="model-switch" for="model-select">Engine
+      <select id="model-select" aria-label="Inference engine">
+        <option value="medr1">Med-R1-8B · reasoning</option>
+        <option value="medgemma">MedGemma-4B · imaging/multimodal</option>
+      </select>
+    </label>
+    <span id="cloud-status" class="status-chip" role="status">cloud: offline</span>
+    <button id="btn-settings" class="btn btn-ghost">Settings</button>
+  </div>
+</header>
+
+<main class="layout">
+  <section class="chat" aria-label="Consultation thread">
+    <div id="chat-log" class="chat-log" aria-live="polite"></div>
+    <form id="chat-form" class="composer" autocomplete="off">
+      <textarea id="chat-input" rows="3"
+        placeholder="Paste history, labs, imaging summary… (math is intercepted &amp; computed locally; slash commands: /spec /plan /build /test /review /constraints)"
+        aria-label="Message"></textarea>
+      <button type="submit" class="btn btn-primary" id="btn-send">Send</button>
+    </form>
+    <p class="footnote muted">
+      Decision support only — not a medical device. Every arithmetic result is computed by the
+      deterministic local engine, never by the model. Verify against institutional protocols.
+    </p>
+  </section>
+</main>
+
+<!-- Settings drawer -->
+<dialog id="settings" class="drawer" aria-labelledby="settings-title">
+  <form method="dialog" class="drawer-inner">
+    <h2 id="settings-title">Settings</h2>
+
+    <fieldset>
+      <legend>Cloud brain (free T4 · trycloudflare)</legend>
+      <div class="row">
+        <button type="button" id="btn-deploy" class="btn btn-primary">Deploy cloud brain</button>
+        <span class="muted">Groq acts only as headless DevOps — never for clinical traffic.</span>
+      </div>
+      <label for="tunnel-url">Tunnel URL (paste the banner URL after bootstrap)</label>
+      <div class="row">
+        <input id="tunnel-url" type="url" placeholder="https://something-words.trycloudflare.com">
+        <button type="button" id="btn-connect" class="btn">Connect</button>
+      </div>
+      <label for="groq-key">Groq API key (optional, DevOps only)</label>
+      <input id="groq-key" type="password" placeholder="gsk_…">
+      <label for="token-input">Session token — paste the one printed by the Colab notebook (or leave blank to use the app's own)</label>
+      <input id="token-input" type="password" placeholder="paste to sync with the cloud brain">
+      <div id="deploy-pack" class="deploy-pack" hidden>
+        <p class="muted">Paste this single cell into a T4 Colab/Kaggle session — no typing required:</p>
+        <ul id="deploy-checklist" class="checklist"></ul>
+        <pre id="deploy-cell" tabindex="0"></pre>
+        <button type="button" id="btn-copy-cell" class="btn btn-ghost">Copy cell</button>
+      </div>
+    </fieldset>
+
+    <fieldset>
+      <legend>Modules</legend>
+      <label class="check">
+        <input type="checkbox" id="reach-toggle">
+        Public grounding (agent-reach): PubMed / WHO / CDC — read-only, session data never sent.
+      </label>
+    </fieldset>
+
+    <p id="session-token-line" class="muted"></p>
+    <div class="row row-end">
+      <button type="button" class="btn" onclick="settings.close()">Close</button>
+    </div>
+  </form>
+</dialog>
+
+<script>
+/* ------------------------------------------------------------------ */
+/* Minimal offline UI. 4px-grid styling in styles.css (WCAG AA).      */
+/* SSE is parsed manually because EventSource cannot POST.            */
+/* ------------------------------------------------------------------ */
+const $ = (id) => document.getElementById(id);
+const chatLog = $("chat-log");
+
+function el(tag, cls, text) {
+  const n = document.createElement(tag);
+  if (cls) n.className = cls;
+  if (text !== undefined) n.textContent = text;
+  return n;
+}
+
+function userBubble(text) {
+  const b = el("div", "bubble user");
+  b.appendChild(el("div", "bubble-text", text));
+  chatLog.appendChild(b);
+  chatLog.scrollTop = chatLog.scrollHeight;
+}
+
+function assistantShell() {
+  const wrap = el("div", "bubble assistant");
+  const think = el("details", "think");
+  const summary = el("summary", "", "Reasoning");
+  think.appendChild(summary);
+  const thinkBody = el("div", "think-body");
+  think.appendChild(thinkBody);
+  const answer = el("div", "answer");
+  const chips = el("div", "chips");
+  wrap.append(think, answer, chips);
+  chatLog.appendChild(wrap);
+  chatLog.scrollTop = chatLog.scrollHeight;
+  return { wrap, think, thinkBody, answer, chips };
+}
+
+function addChip(container, kind, text) {
+  const c = el("span", "chip chip-" + kind, text);
+  container.appendChild(c);
+  return c;
+}
+
+async function send() {
+  const input = $("chat-input");
+  const message = input.value.trim();
+  if (!message) return;
+  input.value = "";
+  userBubble(message);
+  const shell = assistantShell();
+  const model = $("model-select").value;
+  let answer = "";
+
+  const resp = await fetch("/api/chat", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ message, model, history: [] }),
+  });
+  if (!resp.ok || !resp.body) {
+    shell.answer.appendChild(el("p", "error", `Harness error ${resp.status}: ${(await resp.text()).slice(0, 300)}`));
+    return;
+  }
+
+  const reader = resp.body.getReader();
+  const decoder = new TextDecoder();
+  let buf = "";
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    buf += decoder.decode(value, { stream: true });
+    let idx;
+    while ((idx = buf.indexOf("\n\n")) !== -1) {
+      const frame = buf.slice(0, idx);
+      buf = buf.slice(idx + 2);
+      let event = "message", data = "";
+      for (const line of frame.split("\n")) {
+        if (line.startsWith("event: ")) event = line.slice(7);
+        if (line.startsWith("data: ")) data = line.slice(6);
+      }
+      let payload = {};
+      try { payload = JSON.parse(data); } catch { continue; }
+
+      if (event === "think") {
+        shell.thinkBody.textContent += payload === "" ? "" : String(payload);
+        shell.think.open = true;
+      } else if (event === "answer") {
+        answer += payload;
+        shell.answer.textContent = answer;
+      } else if (event === "math") {
+        if (payload.status === "verified") {
+          addChip(shell.chips, "math", `✓ verified ${payload.formula}: ${payload.value} ${payload.unit}`);
+        } else {
+          addChip(shell.chips, "math-missing", "math inputs incomplete — model blocked from guessing");
+        }
+      } else if (event === "ctx") {
+        addChip(shell.chips, "ctx", `context packed −${payload.saved_pct}% (${payload.original_tokens}→${payload.packed_tokens} tok)`);
+      } else if (event === "gate") {
+        if (payload.blocked) addChip(shell.chips, "gate", `gate ${payload.gate}: ${payload.reason}`);
+        else if (payload.command) addChip(shell.chips, "gate", `workflow ${payload.command} engaged`);
+      } else if (event === "error") {
+        addChip(shell.chips, "error", payload.message);
+      } else if (event === "done") {
+        shell.think.open = false;
+      }
+      chatLog.scrollTop = chatLog.scrollHeight;
+    }
+  }
+}
+
+async function refreshStatus() {
+  try {
+    const s = await (await fetch("/api/status")).json();
+    const chip = $("cloud-status");
+    chip.textContent = "cloud: " + (s.heartbeat?.healthy ? "healthy" : s.tunnel_configured ? "unhealthy" : "offline");
+    chip.className = "status-chip " + (s.heartbeat?.healthy ? "ok" : s.tunnel_configured ? "bad" : "");
+    if (s.tunnel_url) $("tunnel-url").value = s.tunnel_url;
+    if (s.groq_configured) $("groq-key").placeholder = "key saved (hidden)";
+    $("reach-toggle").checked = !!s.agent_reach_enabled;
+  } catch { /* UI-only */ }
+}
+
+async function deploy() {
+  const btn = $("btn-deploy");
+  btn.disabled = true; btn.textContent = "Provisioning…";
+  try {
+    const key = $("groq-key").value.trim();
+    const pack = await (await fetch("/api/deploy", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ groq_api_key: key || null }),
+    })).json();
+    $("deploy-pack").hidden = false;
+    $("deploy-cell").textContent = pack.colab_cell;
+    const list = $("deploy-checklist");
+    list.innerHTML = "";
+    pack.checklist.forEach((item, i) => list.appendChild(el("li", "", `${i + 1}. ${item}`)));
+  } catch (e) {
+    alert("Deploy failed: " + e.message);
+  } finally {
+    btn.disabled = false; btn.textContent = "Deploy cloud brain";
+  }
+}
+
+async function connect() {
+  const url = $("tunnel-url").value.trim();
+  const token = $("token-input").value.trim();
+  if (token) {
+    const saved = await fetch("/api/settings", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ session_token: token }),
+    });
+    if (!saved.ok) { alert("Token rejected: " + (await saved.json()).detail); return; }
+    $("token-input").value = "";
+  }
+  const res = await fetch("/api/tunnel", {
+    method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ url }),
+  });
+  if (!res.ok) alert("Connect failed: " + (await res.json()).detail);
+  await refreshStatus();
+}
+
+$("chat-form").addEventListener("submit", (e) => { e.preventDefault(); send(); });
+$("btn-settings").addEventListener("click", () => { settings.showModal(); refreshStatus(); });
+$("btn-deploy").addEventListener("click", deploy);
+$("btn-connect").addEventListener("click", connect);
+$("btn-copy-cell").addEventListener("click", async () => {
+  await navigator.clipboard.writeText($("deploy-cell").textContent);
+  $("btn-copy-cell").textContent = "Copied ✓";
+  setTimeout(() => ($("btn-copy-cell").textContent = "Copy cell"), 1600);
+});
+$("reach-toggle").addEventListener("change", async (e) => {
+  await fetch("/api/settings", {
+    method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ agent_reach_enabled: e.target.checked }),
+  });
+});
+refreshStatus();
+</script>
+</body>
+</html>

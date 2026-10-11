@@ -1,0 +1,13 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 560 680" width="100%" role="img" aria-label="Chest pain pathway"><title>Chest pain pathway</title><desc>Editorial clinical pathway rendered as offline SVG.</desc>
+  <style><![CDATA[
+    :root, svg { --bg-paper:#FAFAF7; --text-ink:#1F2A33;
+                  --accent-clinical:#0E7C66;
+                  --muted-subtle:#5B6770; --line-quiet:#D7DCD8; }
+    .t-ink   { fill: var(--text-ink);         font: 600 16px/1.4 'Helvetica Neue', Arial, sans-serif; }
+    .t-title { fill: var(--text-ink);         font: 700 20px/1.3 'Helvetica Neue', Arial, sans-serif; }
+    .t-muted { fill: var(--muted-subtle);     font: 400 13px/1.4 'Helvetica Neue', Arial, sans-serif; }
+    .t-onbox { fill: var(--bg-paper);         font: 600 15px/1.3 'Helvetica Neue', Arial, sans-serif; }
+    .box     { fill: var(--accent-clinical);  rx: 8; }
+    .box-quiet { fill: var(--think-backdrop); stroke: var(--line-quiet); }
+    .edge    { stroke: var(--muted-subtle);   stroke-width: 2; fill: none; }
+  ]]></style><rect width="560" height="680" fill="var(--bg-paper)"/><text x="280" y="36" text-anchor="middle" class="t-title">Chest pain pathway</text><rect x="80" y="64" width="400" height="40" rx="8" class="box"/><text x="280" y="90" text-anchor="middle" class="t-onbox">Patient presents with chest pain</text><text x="488" y="88" class="t-muted">triage &lt; 10 min</text><path d="M280,128 L280,184" class="edge"/><circle cx="280" cy="184" r="4" fill="var(--muted-subtle)"/><rect x="80" y="184" width="400" height="40" rx="8" class="box"/><text x="280" y="210" text-anchor="middle" class="t-onbox">ECG within 10 minutes</text><text x="488" y="208" class="t-muted">STEMI vs non-STEMI</text><path d="M280,248 L280,304" class="edge"/><circle cx="280" cy="304" r="4" fill="var(--muted-subtle)"/><rect x="80" y="304" width="400" height="40" rx="8" class="box"/><text x="280" y="330" text-anchor="middle" class="t-onbox">Troponin at 0h and 1h</text><text x="488" y="328" class="t-muted">hs-assay</text><path d="M280,368 L280,424" class="edge"/><circle cx="280" cy="424" r="4" fill="var(--muted-subtle)"/><rect x="80" y="424" width="400" height="40" rx="8" class="box"/><text x="280" y="450" text-anchor="middle" class="t-onbox">Risk stratify (HEART score)</text><text x="488" y="448" class="t-muted">≥7 → invasive</text><path d="M280,488 L280,544" class="edge"/><circle cx="280" cy="544" r="4" fill="var(--muted-subtle)"/><rect x="80" y="544" width="400" height="40" rx="8" class="box"/><text x="280" y="570" text-anchor="middle" class="t-onbox">Disposition &amp; red-flag counselling</text></svg>

@@ -1,0 +1,7 @@
+# MedHarness local harness — minimal, pip-installable, no Docker required.
+# All modules degrade gracefully; only these five packages are needed at runtime.
+fastapi>=0.110
+uvicorn>=0.29
+httpx[http2]>=0.27
+pydantic>=2.6
+h2>=4.1          # enables HTTP/2 in httpx (graceful fallback to HTTP/1.1 if absent)
